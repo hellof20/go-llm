@@ -26,7 +26,11 @@ type OpenAICompatProvider struct {
 	baseURL    string
 	retryTimes int
 	httpClient *http.Client
+	log        *slog.Logger
 }
+
+// SetLogger sets the logger for the OpenAI-compatible provider.
+func (p *OpenAICompatProvider) SetLogger(l *slog.Logger) { p.log = l }
 
 // NewOpenAICompat creates a new OpenAI-compatible provider.
 func NewOpenAICompat(apiKey, baseURL string, retryTimes int) (*OpenAICompatProvider, error) {
@@ -45,6 +49,7 @@ func NewOpenAICompat(apiKey, baseURL string, retryTimes int) (*OpenAICompatProvi
 		baseURL:    baseURL,
 		retryTimes: retryTimes,
 		httpClient: &http.Client{Timeout: 120 * time.Second},
+		log:        slog.New(discardHandler{}),
 	}, nil
 }
 
@@ -68,13 +73,12 @@ func (p *OpenAICompatProvider) Chat(ctx context.Context, req ConversationRequest
 		return nil, err
 	}
 
-	slog.DebugContext(ctx, "openai compat api response",
+	p.log.DebugContext(ctx, "openai compat api response",
 		"model", req.Model,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
 		"thinking_tokens", llmResp.TokenUsage.ThinkingTokens,
-		"cached_tokens", llmResp.TokenUsage.CachedTokens,
-		"total_tokens", llmResp.TokenUsage.TotalTokens,
+		"cache_read_tokens", llmResp.TokenUsage.CacheReadTokens,
 	)
 
 	return llmResp, nil
@@ -240,7 +244,7 @@ func (p *OpenAICompatProvider) ChatStream(ctx context.Context, req ConversationR
 			raw := acc.args.String()
 			if raw != "" {
 				if err := json.Unmarshal([]byte(raw), &args); err != nil {
-					slog.Warn("failed to parse streamed tool call arguments",
+					p.log.Warn("failed to parse streamed tool call arguments",
 						"tool", acc.name, "error", err)
 					args["raw"] = raw
 				}
@@ -267,7 +271,7 @@ func (p *OpenAICompatProvider) ChatStream(ctx context.Context, req ConversationR
 
 // buildRequestBody constructs the OpenAI-compatible request body.
 func (p *OpenAICompatProvider) buildRequestBody(req ConversationRequest, stream bool) map[string]any {
-	slog.Info("openai compat request params", "params", req.Params)
+	p.log.DebugContext(context.Background(), "openai compat request params", "params", req.Params)
 	messages := p.buildMessages(req)
 
 	body := map[string]any{
@@ -294,7 +298,7 @@ func (p *OpenAICompatProvider) buildRequestBody(req ConversationRequest, stream 
 		}
 	}
 
-	if req.ParamBool("enable_thinking", false) {
+	if req.ParamString("thinking_level", "") != "" {
 		body["enable_thinking"] = true
 	}
 
@@ -498,7 +502,7 @@ func (p *OpenAICompatProvider) parseResponse(body []byte, model string) (*LLMRes
 		args := make(map[string]any)
 		if tc.Function.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				slog.Warn("failed to parse tool call arguments",
+				p.log.Warn("failed to parse tool call arguments",
 					"tool", tc.Function.Name,
 					"error", err,
 				)
@@ -527,7 +531,7 @@ func extractTokenUsage(u *oaiUsage) TokenUsage {
 	}
 	cachedTokens := 0
 	if u.PromptTokensDetails != nil {
-		cachedTokens = u.PromptTokensDetails.CachedTokens
+		cachedTokens = u.PromptTokensDetails.CacheReadTokens
 	}
 
 	outputTokens := u.CompletionTokens - reasoningTokens
@@ -539,8 +543,7 @@ func extractTokenUsage(u *oaiUsage) TokenUsage {
 		InputTokens:    u.PromptTokens,
 		OutputTokens:   outputTokens,
 		ThinkingTokens: reasoningTokens,
-		CachedTokens:   cachedTokens,
-		TotalTokens:    u.TotalTokens,
+		CacheReadTokens:   cachedTokens,
 	}
 }
 
@@ -605,7 +608,7 @@ type oaiCompletionTokensInfo struct {
 }
 
 type oaiPromptTokensInfo struct {
-	CachedTokens int `json:"cached_tokens"`
+	CacheReadTokens int `json:"cache_read_tokens"`
 }
 
 type oaiStreamChunk struct {

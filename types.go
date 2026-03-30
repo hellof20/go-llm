@@ -17,6 +17,13 @@ const (
 	EventError         = "error"
 )
 
+// Model bundles a model ID with its provider name, enabling provider routing
+// via a single SetModel call.
+type Model struct {
+	ID       string `json:"id"`       // model ID, e.g. "claude-sonnet-4-6"
+	Provider string `json:"provider"` // provider name, e.g. "claude-vertex"
+}
+
 // Standard finish reason constants.
 const (
 	FinishStop            = "stop"
@@ -39,11 +46,11 @@ type StreamEvent struct {
 
 // TokenUsage holds token usage information from an LLM API call.
 type TokenUsage struct {
-	InputTokens    int `json:"inputTokens"`
-	OutputTokens   int `json:"outputTokens"`
-	ThinkingTokens int `json:"thinkingTokens,omitempty"`
-	CachedTokens   int `json:"cachedTokens,omitempty"`
-	TotalTokens    int `json:"totalTokens"`
+	InputTokens         int `json:"inputTokens"`
+	OutputTokens        int `json:"outputTokens"`
+	ThinkingTokens      int `json:"thinkingTokens,omitempty"`
+	CacheReadTokens        int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 }
 
 // Add merges another TokenUsage into this one.
@@ -54,8 +61,8 @@ func (t *TokenUsage) Add(other *TokenUsage) {
 	t.InputTokens += other.InputTokens
 	t.OutputTokens += other.OutputTokens
 	t.ThinkingTokens += other.ThinkingTokens
-	t.CachedTokens += other.CachedTokens
-	t.TotalTokens += other.TotalTokens
+	t.CacheReadTokens += other.CacheReadTokens
+	t.CacheWriteTokens += other.CacheWriteTokens
 }
 
 // Message represents a single message in a conversation.

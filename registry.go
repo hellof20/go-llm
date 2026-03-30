@@ -9,22 +9,39 @@ import (
 // ProviderRegistry holds multiple LLM providers and routes requests
 // to the correct provider based on the ConversationRequest.Provider field.
 // It implements the Provider interface.
+//
+// Providers can be registered in two ways:
+//   - Register: pre-created provider instance, available immediately.
+//   - RegisterConfig: lazy — provider is created on first use via the factory.
 type ProviderRegistry struct {
 	providers   map[string]Provider
+	configs     map[string]Config
 	defaultName string
+	log         *slog.Logger
 }
 
 // NewProviderRegistry creates a new provider registry with a default provider.
 func NewProviderRegistry(defaultName string) *ProviderRegistry {
 	return &ProviderRegistry{
 		providers:   make(map[string]Provider),
+		configs:     make(map[string]Config),
 		defaultName: defaultName,
+		log:         slog.New(discardHandler{}),
 	}
 }
 
-// Register adds a provider to the registry.
+// SetLogger sets the logger for the registry.
+func (r *ProviderRegistry) SetLogger(l *slog.Logger) { r.log = l }
+
+// Register adds a pre-created provider to the registry.
 func (r *ProviderRegistry) Register(name string, provider Provider) {
 	r.providers[name] = provider
+}
+
+// RegisterConfig registers a provider config for lazy initialization.
+// The provider will be created via the registered factory on first use.
+func (r *ProviderRegistry) RegisterConfig(name string, cfg Config) {
+	r.configs[name] = cfg
 }
 
 // Get returns a provider by name.
@@ -44,18 +61,33 @@ func (r *ProviderRegistry) Default() Provider {
 }
 
 // resolve selects the provider to use for a request.
+// If the provider is not yet instantiated but has a registered config,
+// it will be created lazily via the factory.
 func (r *ProviderRegistry) resolve(ctx context.Context, providerName string) (Provider, error) {
-	provider := r.providers[r.defaultName]
-	if providerName != "" {
-		if p, ok := r.providers[providerName]; ok {
+	name := providerName
+	if name == "" {
+		name = r.defaultName
+	}
+
+	provider, ok := r.providers[name]
+	if !ok {
+		// Try lazy creation from config
+		if cfg, hasCfg := r.configs[name]; hasCfg {
+			p, err := NewProvider(name, cfg)
+			if err != nil {
+				return nil, fmt.Errorf("lazy init provider %s: %w", name, err)
+			}
+			r.providers[name] = p
 			provider = p
-		} else {
-			slog.WarnContext(ctx, "requested provider not found, using default",
-				"requested", providerName,
+		} else if name != r.defaultName {
+			r.log.WarnContext(ctx, "requested provider not found, using default",
+				"requested", name,
 				"default", r.defaultName,
 			)
+			return r.resolve(ctx, "")
 		}
 	}
+
 	if provider == nil {
 		return nil, fmt.Errorf("no provider available (requested=%s, default=%s)", providerName, r.defaultName)
 	}

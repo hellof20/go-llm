@@ -1,15 +1,20 @@
 package llm
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+
 )
 
 // Provider name constants.
 const (
-	ProviderGemini = "gemini"
-	ProviderQwen   = "qwen"
-	ProviderClaude = "claude"
+	ProviderGemini       = "gemini"
+	ProviderGeminiVertex = "gemini-vertex"
+	ProviderQwen         = "qwen"
+	ProviderClaude       = "claude"
+	ProviderClaudeVertex = "claude-vertex"
 )
 
 // Config holds configuration for a single LLM provider.
@@ -20,6 +25,14 @@ type Config struct {
 	BaseURL    string
 	RetryTimes int
 }
+
+// discardHandler is a slog.Handler that discards all log records.
+type discardHandler struct{}
+
+func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
+func (d discardHandler) WithAttrs([]slog.Attr) slog.Handler      { return d }
+func (d discardHandler) WithGroup(string) slog.Handler            { return d }
 
 // ProviderFactory creates a Provider from config.
 type ProviderFactory func(cfg Config) (Provider, error)

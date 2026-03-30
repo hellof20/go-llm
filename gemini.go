@@ -13,14 +13,18 @@ import (
 
 func init() {
 	RegisterFactory(ProviderGemini, func(cfg Config) (Provider, error) {
-		return NewGemini(cfg.Project, cfg.Location, cfg.RetryTimes)
+		return NewGemini(cfg.APIKey, cfg.RetryTimes)
+	})
+	RegisterFactory(ProviderGeminiVertex, func(cfg Config) (Provider, error) {
+		return NewGeminiVertex(cfg.APIKey, cfg.Project, cfg.Location, cfg.RetryTimes)
 	})
 }
 
-// GeminiProvider implements Provider using Google Gemini via Vertex AI.
+// GeminiProvider implements Provider using Google Gemini API.
 type GeminiProvider struct {
 	client     *genai.Client
 	retryTimes int
+	log        *slog.Logger
 }
 
 // Client returns the underlying genai client for direct API access.
@@ -28,25 +32,63 @@ func (g *GeminiProvider) Client() *genai.Client {
 	return g.client
 }
 
-// NewGemini creates a new Gemini provider.
-func NewGemini(project, location string, retryTimes int) (*GeminiProvider, error) {
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		Project:  project,
-		Location: location,
-		Backend:  genai.BackendVertexAI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create vertex ai client: %w", err)
-	}
+// SetLogger sets the logger for the Gemini provider.
+func (g *GeminiProvider) SetLogger(l *slog.Logger) { g.log = l }
 
+// NewGemini creates a new Gemini provider using Google AI Studio (API Key).
+func NewGemini(apiKey string, retryTimes int) (*GeminiProvider, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("api key is required for gemini provider")
+	}
 	if retryTimes <= 0 {
 		retryTimes = 3
+	}
+
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create google ai client: %w", err)
 	}
 
 	return &GeminiProvider{
 		client:     client,
 		retryTimes: retryTimes,
+		log:        slog.New(discardHandler{}),
+	}, nil
+}
+
+// NewGeminiVertex creates a new Gemini provider backed by Google Vertex AI.
+// If apiKey is provided, it uses Express mode (no project/location needed).
+// Otherwise, it uses GCP ADC authentication with project and location.
+func NewGeminiVertex(apiKey, project, location string, retryTimes int) (*GeminiProvider, error) {
+	if apiKey == "" && project == "" {
+		return nil, fmt.Errorf("either api key or project is required for gemini-vertex provider")
+	}
+	if retryTimes <= 0 {
+		retryTimes = 3
+	}
+
+	cfg := &genai.ClientConfig{
+		Backend: genai.BackendVertexAI,
+	}
+	if apiKey != "" {
+		cfg.APIKey = apiKey
+	} else {
+		cfg.Project = project
+		cfg.Location = location
+	}
+
+	client, err := genai.NewClient(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create vertex ai client: %w", err)
+	}
+
+	return &GeminiProvider{
+		client:     client,
+		retryTimes: retryTimes,
+		log:        slog.New(discardHandler{}),
 	}, nil
 }
 
@@ -68,13 +110,12 @@ func (g *GeminiProvider) Chat(ctx context.Context, req ConversationRequest) (*LL
 
 	llmResp := g.buildLLMResponse(resp, req.Model)
 
-	slog.DebugContext(ctx, "gemini api response",
+	g.log.DebugContext(ctx, "gemini api response",
 		"model", req.Model,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
 		"thinking_tokens", llmResp.TokenUsage.ThinkingTokens,
-		"cached_tokens", llmResp.TokenUsage.CachedTokens,
-		"total_tokens", llmResp.TokenUsage.TotalTokens,
+		"cache_read_tokens", llmResp.TokenUsage.CacheReadTokens,
 	)
 
 	return llmResp, nil
@@ -165,8 +206,7 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req ConversationRequest
 					InputTokens:    int(resp.UsageMetadata.PromptTokenCount),
 					OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount),
 					ThinkingTokens: int(resp.UsageMetadata.ThoughtsTokenCount),
-					CachedTokens:   int(resp.UsageMetadata.CachedContentTokenCount),
-					TotalTokens:    int(resp.UsageMetadata.TotalTokenCount),
+					CacheReadTokens:   int(resp.UsageMetadata.CachedContentTokenCount),
 				}
 			}
 		}
@@ -294,17 +334,23 @@ func (g *GeminiProvider) buildConfig(req ConversationRequest) *genai.GenerateCon
 	thinkingLevel := req.ParamString("thinking_level", "")
 	if thinkingLevel != "" {
 		tc := &genai.ThinkingConfig{}
+		// gemini-3.1-pro only supports LOW/MEDIUM/HIGH, clamp minimal→LOW
+		isProModel := strings.Contains(req.Model, "-pro")
 		switch strings.ToLower(thinkingLevel) {
 		case "minimal":
-			tc.ThinkingLevel = genai.ThinkingLevelMinimal
+			if isProModel {
+				tc.ThinkingLevel = genai.ThinkingLevelLow
+			} else {
+				tc.ThinkingLevel = genai.ThinkingLevelMinimal
+			}
 		case "low":
 			tc.ThinkingLevel = genai.ThinkingLevelLow
 		case "medium":
 			tc.ThinkingLevel = genai.ThinkingLevelMedium
-		case "high":
+		case "high", "xhigh", "max":
 			tc.ThinkingLevel = genai.ThinkingLevelHigh
 		default:
-			tc.ThinkingLevel = genai.ThinkingLevelLow
+			tc.ThinkingLevel = genai.ThinkingLevelHigh
 		}
 		cfg.ThinkingConfig = tc
 	}
@@ -352,8 +398,7 @@ func (g *GeminiProvider) extractUsage(resp *genai.GenerateContentResponse) Token
 		InputTokens:    int(resp.UsageMetadata.PromptTokenCount),
 		OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount),
 		ThinkingTokens: int(resp.UsageMetadata.ThoughtsTokenCount),
-		CachedTokens:   int(resp.UsageMetadata.CachedContentTokenCount),
-		TotalTokens:    int(resp.UsageMetadata.TotalTokenCount),
+		CacheReadTokens:   int(resp.UsageMetadata.CachedContentTokenCount),
 	}
 }
 
@@ -376,7 +421,7 @@ func (g *GeminiProvider) CreateCachedContent(ctx context.Context, model, display
 		return "", fmt.Errorf("create cached content: %w", err)
 	}
 
-	slog.DebugContext(ctx, "created cached content",
+	g.log.DebugContext(ctx, "created cached content",
 		"name", cached.Name,
 		"display_name", displayName,
 		"model", model,
@@ -424,12 +469,12 @@ func (g *GeminiProvider) ChatWithCache(ctx context.Context, cacheName string, re
 
 	llmResp := g.buildLLMResponse(resp, req.Model)
 
-	slog.DebugContext(ctx, "gemini cached api response",
+	g.log.DebugContext(ctx, "gemini cached api response",
 		"model", req.Model,
 		"cache", cacheName,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
-		"cached_tokens", llmResp.TokenUsage.CachedTokens,
+		"cache_read_tokens", llmResp.TokenUsage.CacheReadTokens,
 	)
 
 	return llmResp, nil

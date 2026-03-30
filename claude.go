@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
+
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/anthropics/anthropic-sdk-go/vertex"
@@ -15,20 +17,48 @@ import (
 
 func init() {
 	RegisterFactory(ProviderClaude, func(cfg Config) (Provider, error) {
-		return NewClaude(cfg.Project, cfg.Location, cfg.RetryTimes)
+		return NewClaude(cfg.APIKey, cfg.RetryTimes)
+	})
+	RegisterFactory(ProviderClaudeVertex, func(cfg Config) (Provider, error) {
+		return NewClaudeVertex(cfg.Project, cfg.Location, cfg.RetryTimes)
 	})
 }
 
-// ClaudeProvider implements Provider using the Anthropic Messages API via Vertex AI.
+// ClaudeProvider implements Provider using the Anthropic Messages API.
 type ClaudeProvider struct {
 	client     *anthropic.Client
 	retryTimes int
+	log        *slog.Logger
 }
 
-// NewClaude creates a new Claude provider backed by Google Vertex AI.
-func NewClaude(project, location string, retryTimes int) (*ClaudeProvider, error) {
+// SetLogger sets the logger for the Claude provider.
+func (p *ClaudeProvider) SetLogger(l *slog.Logger) { p.log = l }
+
+// NewClaude creates a new Claude provider using the Anthropic API directly.
+func NewClaude(apiKey string, retryTimes int) (*ClaudeProvider, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("api key is required for claude provider")
+	}
+	if retryTimes <= 0 {
+		retryTimes = 3
+	}
+
+	client := anthropic.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithMaxRetries(retryTimes),
+	)
+
+	return &ClaudeProvider{
+		client:     &client,
+		retryTimes: retryTimes,
+		log:        slog.New(discardHandler{}),
+	}, nil
+}
+
+// NewClaudeVertex creates a new Claude provider backed by Google Vertex AI.
+func NewClaudeVertex(project, location string, retryTimes int) (*ClaudeProvider, error) {
 	if project == "" {
-		return nil, fmt.Errorf("project is required for claude provider")
+		return nil, fmt.Errorf("project is required for claude-vertex provider")
 	}
 	if location == "" {
 		location = "us-east5"
@@ -47,6 +77,7 @@ func NewClaude(project, location string, retryTimes int) (*ClaudeProvider, error
 	return &ClaudeProvider{
 		client:     &client,
 		retryTimes: retryTimes,
+		log:        slog.New(discardHandler{}),
 	}, nil
 }
 
@@ -67,13 +98,13 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req ConversationRequest) (*LL
 
 	llmResp := p.parseMessage(resp, req.Model)
 
-	slog.DebugContext(ctx, "claude api response",
+	p.log.DebugContext(ctx, "claude api response",
 		"model", req.Model,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
 		"thinking_tokens", llmResp.TokenUsage.ThinkingTokens,
-		"cached_tokens", llmResp.TokenUsage.CachedTokens,
-		"total_tokens", llmResp.TokenUsage.TotalTokens,
+		"cache_read_tokens", llmResp.TokenUsage.CacheReadTokens,
+		"cache_write_tokens", llmResp.TokenUsage.CacheWriteTokens,
 	)
 
 	return llmResp, nil
@@ -161,7 +192,7 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 					args := make(map[string]any)
 					if state.input != "" {
 						if err := json.Unmarshal([]byte(state.input), &args); err != nil {
-							slog.Warn("failed to parse streamed tool call input",
+							p.log.Warn("failed to parse streamed tool call input",
 								"tool", state.name, "error", err)
 							args["raw"] = state.input
 						}
@@ -182,11 +213,28 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 					finishReason = mapFinishReason(string(event.Delta.StopReason), nil)
 				}
 				totalUsage.OutputTokens = int(event.Usage.OutputTokens)
+				if event.Usage.CacheReadInputTokens > 0 {
+					totalUsage.CacheReadTokens = int(event.Usage.CacheReadInputTokens)
+				}
+				if event.Usage.CacheCreationInputTokens > 0 {
+					totalUsage.CacheWriteTokens = int(event.Usage.CacheCreationInputTokens)
+				}
+				p.log.DebugContext(ctx, "claude stream message_delta usage",
+					"output_tokens", event.Usage.OutputTokens,
+					"cache_read", event.Usage.CacheReadInputTokens,
+					"cache_write", event.Usage.CacheCreationInputTokens,
+				)
 
 			case "message_start":
 				msg := event.Message
 				totalUsage.InputTokens = int(msg.Usage.InputTokens)
-				totalUsage.CachedTokens = int(msg.Usage.CacheReadInputTokens)
+				totalUsage.CacheReadTokens = int(msg.Usage.CacheReadInputTokens)
+				totalUsage.CacheWriteTokens = int(msg.Usage.CacheCreationInputTokens)
+				p.log.DebugContext(ctx, "claude stream message_start usage",
+					"input_tokens", msg.Usage.InputTokens,
+					"cache_read", msg.Usage.CacheReadInputTokens,
+					"cache_write", msg.Usage.CacheCreationInputTokens,
+				)
 			}
 		}
 
@@ -194,8 +242,6 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 			ch <- StreamEvent{Type: EventError, Error: fmt.Errorf("claude stream: %w", err)}
 			return
 		}
-
-		totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.OutputTokens + totalUsage.ThinkingTokens
 
 		ch <- StreamEvent{
 			Type:         EventDone,
@@ -209,21 +255,20 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 
 // buildParams constructs the Anthropic MessageNewParams from internal request.
 func (p *ClaudeProvider) buildParams(req ConversationRequest) anthropic.MessageNewParams {
-	slog.Info("claude request params", "params", req.Params)
-
 	maxTokens := req.ParamInt("max_tokens", 8192)
 
 	params := anthropic.MessageNewParams{
-		Model:        anthropic.Model(req.Model),
-		MaxTokens:    int64(maxTokens),
-		Messages:     p.buildMessages(req),
-		CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		Model:     anthropic.Model(req.Model),
+		MaxTokens: int64(maxTokens),
+		Messages:  p.buildMessages(req),
 	}
 
 	if req.SystemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: req.SystemPrompt},
+		block := anthropic.TextBlockParam{
+			Text:         req.SystemPrompt,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
 		}
+		params.System = []anthropic.TextBlockParam{block}
 	}
 
 	if temp := req.ParamFloat64("temperature", -1); temp >= 0 {
@@ -236,11 +281,34 @@ func (p *ClaudeProvider) buildParams(req ConversationRequest) anthropic.MessageN
 		params.TopK = anthropic.Int(int64(topK))
 	}
 
-	// Extended thinking
-	if budgetTokens := req.ParamInt("thinking_budget", 0); budgetTokens > 0 {
-		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(budgetTokens))
-		if int64(maxTokens) < int64(budgetTokens) {
-			params.MaxTokens = int64(budgetTokens) + int64(maxTokens)
+	// Adaptive thinking: read unified thinking_level and map to Claude effort
+	if effort := req.ParamString("thinking_level", ""); effort != "" {
+		// Map agent-level thinking levels to Claude effort values
+		// "max" effort is only supported on Opus 4.6
+		isOpus46 := strings.Contains(req.Model, "opus-4-6") || strings.Contains(req.Model, "opus-4.6")
+		var mapped anthropic.OutputConfigEffort
+		switch strings.ToLower(effort) {
+		case "low", "minimal":
+			mapped = anthropic.OutputConfigEffortLow
+		case "medium":
+			mapped = anthropic.OutputConfigEffortMedium
+		case "high":
+			mapped = anthropic.OutputConfigEffortHigh
+		case "xhigh", "max":
+			if isOpus46 {
+				mapped = anthropic.OutputConfigEffortMax
+			} else {
+				mapped = anthropic.OutputConfigEffortHigh
+			}
+		default:
+			mapped = anthropic.OutputConfigEffortHigh
+		}
+		adaptive := anthropic.NewThinkingConfigAdaptiveParam()
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &adaptive,
+		}
+		params.OutputConfig = anthropic.OutputConfigParam{
+			Effort: mapped,
 		}
 	}
 
@@ -322,6 +390,18 @@ func (p *ClaudeProvider) buildMessages(req ConversationRequest) []anthropic.Mess
 		})
 	}
 
+	// Add cache_control to the last non-assistant message's last content block.
+	// This caches system prompt + tools + all messages up to this point.
+	for i := len(result) - 1; i >= 0; i-- {
+		if result[i].Role != anthropic.MessageParamRoleAssistant && len(result[i].Content) > 0 {
+			lastBlock := &result[i].Content[len(result[i].Content)-1]
+			if cc := lastBlock.GetCacheControl(); cc != nil {
+				*cc = anthropic.NewCacheControlEphemeralParam()
+			}
+			break
+		}
+	}
+
 	return result
 }
 
@@ -348,7 +428,7 @@ func (p *ClaudeProvider) parseMessage(msg *anthropic.Message, model string) *LLM
 			args := make(map[string]any)
 			if len(block.Input) > 0 {
 				if err := json.Unmarshal(block.Input, &args); err != nil {
-					slog.Warn("failed to parse tool call input",
+					p.log.Warn("failed to parse tool call input",
 						"tool", block.Name, "error", err)
 					args["raw"] = string(block.Input)
 				}
@@ -362,11 +442,11 @@ func (p *ClaudeProvider) parseMessage(msg *anthropic.Message, model string) *LLM
 	}
 
 	resp.TokenUsage = TokenUsage{
-		InputTokens:  int(msg.Usage.InputTokens),
-		OutputTokens: int(msg.Usage.OutputTokens),
-		CachedTokens: int(msg.Usage.CacheReadInputTokens),
+		InputTokens:         int(msg.Usage.InputTokens),
+		OutputTokens:        int(msg.Usage.OutputTokens),
+		CacheReadTokens:        int(msg.Usage.CacheReadInputTokens),
+		CacheWriteTokens: int(msg.Usage.CacheCreationInputTokens),
 	}
-	resp.TokenUsage.TotalTokens = resp.TokenUsage.InputTokens + resp.TokenUsage.OutputTokens + resp.TokenUsage.ThinkingTokens
 
 	return resp
 }

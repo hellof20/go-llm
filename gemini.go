@@ -331,12 +331,20 @@ func (g *GeminiProvider) buildConfig(req ConversationRequest) *genai.GenerateCon
 		}
 	}
 
+	// Gemini 3 models cannot fully disable thinking.
+	// "disabled"/"none" clamps to the model's minimum level:
+	//   pro → LOW, flash/flash-lite → MINIMAL.
 	thinkingLevel := req.ParamString("thinking_level", "")
 	if thinkingLevel != "" {
 		tc := &genai.ThinkingConfig{}
-		// gemini-3.1-pro only supports LOW/MEDIUM/HIGH, clamp minimal→LOW
 		isProModel := strings.Contains(req.Model, "-pro")
 		switch strings.ToLower(thinkingLevel) {
+		case "disabled", "none":
+			if isProModel {
+				tc.ThinkingLevel = genai.ThinkingLevelLow
+			} else {
+				tc.ThinkingLevel = genai.ThinkingLevelMinimal
+			}
 		case "minimal":
 			if isProModel {
 				tc.ThinkingLevel = genai.ThinkingLevelLow

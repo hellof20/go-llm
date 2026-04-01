@@ -298,7 +298,7 @@ func (p *OpenAICompatProvider) buildRequestBody(req ConversationRequest, stream 
 		}
 	}
 
-	if req.ParamString("thinking_level", "") != "" {
+	if tl := req.ParamString("thinking_level", ""); tl != "" && tl != "disabled" && tl != "none" {
 		body["enable_thinking"] = true
 	}
 

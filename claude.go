@@ -282,7 +282,8 @@ func (p *ClaudeProvider) buildParams(req ConversationRequest) anthropic.MessageN
 	}
 
 	// Adaptive thinking: read unified thinking_level and map to Claude effort
-	if effort := req.ParamString("thinking_level", ""); effort != "" {
+	// "disabled"/"none" explicitly disables thinking (no thinking param sent).
+	if effort := req.ParamString("thinking_level", ""); effort != "" && effort != "disabled" && effort != "none" {
 		// Map agent-level thinking levels to Claude effort values
 		// "max" effort is only supported on Opus 4.6
 		isOpus46 := strings.Contains(req.Model, "opus-4-6") || strings.Contains(req.Model, "opus-4.6")
@@ -313,9 +314,11 @@ func (p *ClaudeProvider) buildParams(req ConversationRequest) anthropic.MessageN
 	}
 
 	// Tools
+	// Claude does not allow forced tool_choice when thinking is enabled.
+	thinkingEnabled := params.Thinking.OfAdaptive != nil || params.Thinking.OfEnabled != nil
 	if len(req.Tools) > 0 {
 		params.Tools = convertToClaudeTools(req.Tools)
-		if req.ForceTool {
+		if req.ForceTool && !thinkingEnabled {
 			params.ToolChoice = anthropic.ToolChoiceUnionParam{
 				OfAny: &anthropic.ToolChoiceAnyParam{},
 			}

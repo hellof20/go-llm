@@ -1,3 +1,4 @@
 cmd/
 .DS_Store
 bin/
+reference/

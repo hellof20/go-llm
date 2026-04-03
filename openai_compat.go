@@ -326,11 +326,25 @@ func mapRole(role string) string {
 func (p *OpenAICompatProvider) buildMessages(req ConversationRequest) []map[string]any {
 	result := make([]map[string]any, 0, len(req.Messages)+1)
 
+	enableCache := req.ParamBool("enable_cache", false)
+	cacheControl := map[string]any{"type": "ephemeral"}
+
 	if req.SystemPrompt != "" {
-		result = append(result, map[string]any{
-			"role":    "system",
-			"content": req.SystemPrompt,
-		})
+		if enableCache {
+			result = append(result, map[string]any{
+				"role": "system",
+				"content": []map[string]any{{
+					"type":          "text",
+					"text":          req.SystemPrompt,
+					"cache_control": cacheControl,
+				}},
+			})
+		} else {
+			result = append(result, map[string]any{
+				"role":    "system",
+				"content": req.SystemPrompt,
+			})
+		}
 	}
 
 	// Vision parameter applied per image part
@@ -437,6 +451,37 @@ func (p *OpenAICompatProvider) buildMessages(req ConversationRequest) []map[stri
 		result = append(result, m)
 	}
 
+	// Add cache_control to the last non-assistant message for context caching.
+	if enableCache {
+		for i := len(result) - 1; i >= 0; i-- {
+			msg := result[i]
+			role, _ := msg["role"].(string)
+			if role == "assistant" {
+				continue
+			}
+			// Skip system prompt — already handled above
+			if role == "system" {
+				break
+			}
+			content := msg["content"]
+			switch c := content.(type) {
+			case string:
+				// Convert plain string content to array format with cache_control
+				result[i]["content"] = []map[string]any{{
+					"type":          "text",
+					"text":          c,
+					"cache_control": cacheControl,
+				}}
+			case []map[string]any:
+				// Add cache_control to the last content block
+				if len(c) > 0 {
+					c[len(c)-1]["cache_control"] = cacheControl
+				}
+			}
+			break
+		}
+	}
+
 	return result
 }
 
@@ -530,8 +575,10 @@ func extractTokenUsage(u *oaiUsage) TokenUsage {
 		reasoningTokens = u.CompletionTokensDetails.ReasoningTokens
 	}
 	cachedTokens := 0
+	cacheCreationTokens := 0
 	if u.PromptTokensDetails != nil {
-		cachedTokens = u.PromptTokensDetails.CacheReadTokens
+		cachedTokens = u.PromptTokensDetails.CacheReadTokens + u.PromptTokensDetails.CachedTokens
+		cacheCreationTokens = u.PromptTokensDetails.CacheCreationTokens + u.PromptTokensDetails.CacheCreationInputTokens
 	}
 
 	outputTokens := u.CompletionTokens - reasoningTokens
@@ -540,10 +587,11 @@ func extractTokenUsage(u *oaiUsage) TokenUsage {
 	}
 
 	return TokenUsage{
-		InputTokens:    u.PromptTokens,
-		OutputTokens:   outputTokens,
-		ThinkingTokens: reasoningTokens,
-		CacheReadTokens:   cachedTokens,
+		InputTokens:      u.PromptTokens,
+		OutputTokens:     outputTokens,
+		ThinkingTokens:   reasoningTokens,
+		CacheReadTokens:  cachedTokens,
+		CacheWriteTokens: cacheCreationTokens,
 	}
 }
 
@@ -608,7 +656,10 @@ type oaiCompletionTokensInfo struct {
 }
 
 type oaiPromptTokensInfo struct {
-	CacheReadTokens int `json:"cache_read_tokens"`
+	CacheReadTokens          int `json:"cache_read_tokens"`
+	CacheCreationTokens      int `json:"cache_creation_tokens"`
+	CachedTokens             int `json:"cached_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type oaiStreamChunk struct {

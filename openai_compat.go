@@ -18,6 +18,9 @@ func init() {
 	RegisterFactory(ProviderQwen, func(cfg Config) (Provider, error) {
 		return NewOpenAICompat(cfg.APIKey, cfg.BaseURL, cfg.RetryTimes)
 	})
+	RegisterFactory(ProviderKimiBailian, func(cfg Config) (Provider, error) {
+		return NewOpenAICompat(cfg.APIKey, cfg.BaseURL, cfg.RetryTimes)
+	})
 }
 
 // OpenAICompatProvider implements Provider using OpenAI-compatible APIs (e.g. Qwen/DashScope).

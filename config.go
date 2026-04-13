@@ -15,6 +15,7 @@ const (
 	ProviderQwen         = "qwen"
 	ProviderClaude       = "claude"
 	ProviderClaudeVertex = "claude-vertex"
+	ProviderKimiBailian  = "kimi-bailian"
 )
 
 // Config holds configuration for a single LLM provider.

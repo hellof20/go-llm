@@ -124,9 +124,10 @@ type ToolDefinition struct {
 
 // ConversationRequest contains parameters for a conversation API call.
 type ConversationRequest struct {
-	Messages     []Message        `json:"messages"`
-	SystemPrompt string           `json:"systemPrompt,omitempty"`
-	Model        string           `json:"model"`
+	Messages              []Message        `json:"messages"`
+	SystemPrompt          string           `json:"systemPrompt,omitempty"`
+	CacheableSystemPrompt string           `json:"cacheableSystemPrompt,omitempty"` // static system prompt cached separately (Claude only)
+	Model                 string           `json:"model"`
 	Provider     string           `json:"provider,omitempty"` // provider name for routing
 	Params       map[string]any   `json:"params,omitempty"`   // model parameters (temperature, max_tokens, etc.)
 	Tools        []ToolDefinition `json:"tools,omitempty"`

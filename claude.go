@@ -263,7 +263,21 @@ func (p *ClaudeProvider) buildParams(req ConversationRequest) anthropic.MessageN
 		Messages:  p.buildMessages(req),
 	}
 
-	if req.SystemPrompt != "" {
+	if req.CacheableSystemPrompt != "" {
+		// Split system prompt: static part with cache_control, dynamic part without.
+		// Anthropic prefix order: tools → system → messages.
+		// Keeping system static ensures tools+system are cached together.
+		cached := anthropic.TextBlockParam{
+			Text:         req.CacheableSystemPrompt,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		}
+		params.System = []anthropic.TextBlockParam{cached}
+		if req.SystemPrompt != "" {
+			params.System = append(params.System, anthropic.TextBlockParam{
+				Text: req.SystemPrompt,
+			})
+		}
+	} else if req.SystemPrompt != "" {
 		block := anthropic.TextBlockParam{
 			Text:         req.SystemPrompt,
 			CacheControl: anthropic.NewCacheControlEphemeralParam(),

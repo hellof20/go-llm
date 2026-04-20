@@ -122,6 +122,109 @@ type ToolDefinition struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
+// SafetySetting configures content safety filtering for a specific harm category.
+type SafetySetting struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
+}
+
+// ImageRequest contains parameters for an image generation API call.
+type ImageRequest struct {
+	Provider string         `json:"provider,omitempty"`
+	Model    string         `json:"model"`
+	Prompt   string         `json:"prompt"`
+	Images   []Image        `json:"images,omitempty"`   // input images for editing
+	Params   map[string]any `json:"params,omitempty"`
+}
+
+// ParamString extracts a string value from Params by key, with a default.
+func (r ImageRequest) ParamString(key string, defaultVal string) string {
+	v, ok := r.Params[key]
+	if !ok {
+		return defaultVal
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return defaultVal
+}
+
+// ParamFloat32 extracts a float32 value from Params by key, returning nil if absent.
+func (r ImageRequest) ParamFloat32(key string) *float32 {
+	v, ok := r.Params[key]
+	if !ok {
+		return nil
+	}
+	var f float32
+	switch n := v.(type) {
+	case float64:
+		f = float32(n)
+	case float32:
+		f = n
+	case int:
+		f = float32(n)
+	case json.Number:
+		ff, err := n.Float64()
+		if err != nil {
+			return nil
+		}
+		f = float32(ff)
+	default:
+		return nil
+	}
+	return &f
+}
+
+// ParamInt32 extracts an int32 value from Params by key, returning nil if absent.
+func (r ImageRequest) ParamInt32(key string) *int32 {
+	v, ok := r.Params[key]
+	if !ok {
+		return nil
+	}
+	var i int32
+	switch n := v.(type) {
+	case float64:
+		i = int32(n)
+	case int:
+		i = int32(n)
+	case json.Number:
+		ii, err := n.Int64()
+		if err != nil {
+			return nil
+		}
+		i = int32(ii)
+	default:
+		return nil
+	}
+	return &i
+}
+
+// ParamBool extracts a bool value from Params by key, with a default.
+func (r ImageRequest) ParamBool(key string, defaultVal bool) bool {
+	v, ok := r.Params[key]
+	if !ok {
+		return defaultVal
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return defaultVal
+}
+
+// ImageResponse represents the result of an image generation request.
+type ImageResponse struct {
+	Images     []GeneratedImage `json:"images"`
+	Text       string           `json:"text,omitempty"`
+	TokenUsage TokenUsage       `json:"tokenUsage"`
+	ModelUsed  string           `json:"modelUsed,omitempty"`
+}
+
+// GeneratedImage represents a single generated image.
+type GeneratedImage struct {
+	Data     []byte `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
 // ConversationRequest contains parameters for a conversation API call.
 type ConversationRequest struct {
 	Messages              []Message        `json:"messages"`

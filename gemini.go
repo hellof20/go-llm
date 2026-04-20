@@ -24,16 +24,12 @@ func init() {
 type GeminiProvider struct {
 	client     *genai.Client
 	retryTimes int
-	log        *slog.Logger
 }
 
 // Client returns the underlying genai client for direct API access.
 func (g *GeminiProvider) Client() *genai.Client {
 	return g.client
 }
-
-// SetLogger sets the logger for the Gemini provider.
-func (g *GeminiProvider) SetLogger(l *slog.Logger) { g.log = l }
 
 // NewGemini creates a new Gemini provider using Google AI Studio (API Key).
 func NewGemini(apiKey string, retryTimes int) (*GeminiProvider, error) {
@@ -55,7 +51,7 @@ func NewGemini(apiKey string, retryTimes int) (*GeminiProvider, error) {
 	return &GeminiProvider{
 		client:     client,
 		retryTimes: retryTimes,
-		log:        slog.New(discardHandler{}),
+
 	}, nil
 }
 
@@ -88,7 +84,7 @@ func NewGeminiVertex(apiKey, project, location string, retryTimes int) (*GeminiP
 	return &GeminiProvider{
 		client:     client,
 		retryTimes: retryTimes,
-		log:        slog.New(discardHandler{}),
+
 	}, nil
 }
 
@@ -110,7 +106,7 @@ func (g *GeminiProvider) Chat(ctx context.Context, req ConversationRequest) (*LL
 
 	llmResp := g.buildLLMResponse(resp, req.Model)
 
-	g.log.DebugContext(ctx, "gemini api response",
+	slog.DebugContext(ctx, "gemini api response",
 		"model", req.Model,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
@@ -204,7 +200,7 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req ConversationRequest
 			if resp.UsageMetadata != nil {
 				totalUsage = TokenUsage{
 					InputTokens:    int(resp.UsageMetadata.PromptTokenCount),
-					OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount),
+					OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount),
 					ThinkingTokens: int(resp.UsageMetadata.ThoughtsTokenCount),
 					CacheReadTokens:   int(resp.UsageMetadata.CachedContentTokenCount),
 				}
@@ -404,7 +400,7 @@ func (g *GeminiProvider) extractUsage(resp *genai.GenerateContentResponse) Token
 	}
 	return TokenUsage{
 		InputTokens:    int(resp.UsageMetadata.PromptTokenCount),
-		OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount),
+		OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount),
 		ThinkingTokens: int(resp.UsageMetadata.ThoughtsTokenCount),
 		CacheReadTokens:   int(resp.UsageMetadata.CachedContentTokenCount),
 	}
@@ -429,7 +425,7 @@ func (g *GeminiProvider) CreateCachedContent(ctx context.Context, model, display
 		return "", fmt.Errorf("create cached content: %w", err)
 	}
 
-	g.log.DebugContext(ctx, "created cached content",
+	slog.DebugContext(ctx, "created cached content",
 		"name", cached.Name,
 		"display_name", displayName,
 		"model", model,
@@ -477,7 +473,7 @@ func (g *GeminiProvider) ChatWithCache(ctx context.Context, cacheName string, re
 
 	llmResp := g.buildLLMResponse(resp, req.Model)
 
-	g.log.DebugContext(ctx, "gemini cached api response",
+	slog.DebugContext(ctx, "gemini cached api response",
 		"model", req.Model,
 		"cache", cacheName,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
@@ -486,6 +482,144 @@ func (g *GeminiProvider) ChatWithCache(ctx context.Context, cacheName string, re
 	)
 
 	return llmResp, nil
+}
+
+// GenerateImage generates images using a Gemini image model.
+func (g *GeminiProvider) GenerateImage(ctx context.Context, req ImageRequest) (*ImageResponse, error) {
+	var parts []*genai.Part
+
+	// Add input images for editing scenarios
+	for _, img := range req.Images {
+		parts = append(parts, &genai.Part{
+			InlineData: &genai.Blob{
+				MIMEType: img.MimeType,
+				Data:     img.Data,
+			},
+		})
+	}
+
+	parts = append(parts, &genai.Part{Text: req.Prompt})
+
+	contents := []*genai.Content{
+		{Role: "user", Parts: parts},
+	}
+
+	cfg := &genai.GenerateContentConfig{
+		ResponseModalities: []string{
+			string(genai.ModalityText),
+			string(genai.ModalityImage),
+		},
+		Temperature: req.ParamFloat32("temperature"),
+		TopP:        req.ParamFloat32("top_p"),
+		TopK:        req.ParamFloat32("top_k"),
+	}
+
+	if v := req.ParamInt32("max_output_tokens"); v != nil {
+		cfg.MaxOutputTokens = *v
+	}
+
+	if aspectRatio := req.ParamString("aspect_ratio", ""); aspectRatio != "" {
+		if cfg.ImageConfig == nil {
+			cfg.ImageConfig = &genai.ImageConfig{}
+		}
+		cfg.ImageConfig.AspectRatio = aspectRatio
+	}
+	if imageSize := req.ParamString("image_size", ""); imageSize != "" {
+		if cfg.ImageConfig == nil {
+			cfg.ImageConfig = &genai.ImageConfig{}
+		}
+		cfg.ImageConfig.ImageSize = imageSize
+	}
+	if outputMIMEType := req.ParamString("output_mime_type", ""); outputMIMEType != "" {
+		if cfg.ImageConfig == nil {
+			cfg.ImageConfig = &genai.ImageConfig{}
+		}
+		cfg.ImageConfig.OutputMIMEType = outputMIMEType
+	}
+	if personGen := req.ParamString("person_generation", ""); personGen != "" {
+		if cfg.ImageConfig == nil {
+			cfg.ImageConfig = &genai.ImageConfig{}
+		}
+		cfg.ImageConfig.PersonGeneration = personGen
+	}
+	if compressionQuality := req.ParamInt32("output_compression_quality"); compressionQuality != nil {
+		if cfg.ImageConfig == nil {
+			cfg.ImageConfig = &genai.ImageConfig{}
+		}
+		cfg.ImageConfig.OutputCompressionQuality = compressionQuality
+	}
+
+	if thinkingLevel := req.ParamString("thinking_level", ""); thinkingLevel != "" {
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
+			ThinkingLevel: genai.ThinkingLevel(thinkingLevel),
+		}
+	}
+	if thinkingBudget := req.ParamInt32("thinking_budget"); thinkingBudget != nil {
+		if cfg.ThinkingConfig == nil {
+			cfg.ThinkingConfig = &genai.ThinkingConfig{}
+		}
+		cfg.ThinkingConfig.ThinkingBudget = thinkingBudget
+	}
+
+	if safetySettings, ok := req.Params["safety_settings"]; ok {
+		if settings, ok := safetySettings.([]SafetySetting); ok {
+			for _, s := range settings {
+				cfg.SafetySettings = append(cfg.SafetySettings, &genai.SafetySetting{
+					Category:  genai.HarmCategory(s.Category),
+					Threshold: genai.HarmBlockThreshold(s.Threshold),
+				})
+			}
+		}
+	}
+
+	resp, err := withRetry(ctx, g.retryTimes, func() (*genai.GenerateContentResponse, error) {
+		r, err := g.client.Models.GenerateContent(ctx, req.Model, contents, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("gemini image api call: %w", err)
+		}
+		return r, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	imgResp := &ImageResponse{
+		ModelUsed: req.Model,
+	}
+
+	imgResp.TokenUsage = g.extractUsage(resp)
+
+	for _, candidate := range resp.Candidates {
+		if candidate.Content == nil {
+			continue
+		}
+		for _, part := range candidate.Content.Parts {
+			if part.Thought {
+				continue
+			}
+			if part.Text != "" {
+				if imgResp.Text != "" {
+					imgResp.Text += "\n"
+				}
+				imgResp.Text += part.Text
+			}
+			if part.InlineData != nil {
+				imgResp.Images = append(imgResp.Images, GeneratedImage{
+					Data:     part.InlineData.Data,
+					MimeType: part.InlineData.MIMEType,
+				})
+			}
+		}
+	}
+
+	slog.DebugContext(ctx, "gemini image api response",
+		"model", req.Model,
+		"images_generated", len(imgResp.Images),
+		"input_tokens", imgResp.TokenUsage.InputTokens,
+		"output_tokens", imgResp.TokenUsage.OutputTokens,
+	)
+
+	return imgResp, nil
 }
 
 // buildLLMResponse extracts text and tool calls from a Gemini response.

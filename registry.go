@@ -17,7 +17,6 @@ type ProviderRegistry struct {
 	providers   map[string]Provider
 	configs     map[string]Config
 	defaultName string
-	log         *slog.Logger
 }
 
 // NewProviderRegistry creates a new provider registry with a default provider.
@@ -26,12 +25,9 @@ func NewProviderRegistry(defaultName string) *ProviderRegistry {
 		providers:   make(map[string]Provider),
 		configs:     make(map[string]Config),
 		defaultName: defaultName,
-		log:         slog.New(discardHandler{}),
 	}
 }
 
-// SetLogger sets the logger for the registry.
-func (r *ProviderRegistry) SetLogger(l *slog.Logger) { r.log = l }
 
 // Register adds a pre-created provider to the registry.
 func (r *ProviderRegistry) Register(name string, provider Provider) {
@@ -80,7 +76,7 @@ func (r *ProviderRegistry) resolve(ctx context.Context, providerName string) (Pr
 			r.providers[name] = p
 			provider = p
 		} else if name != r.defaultName {
-			r.log.WarnContext(ctx, "requested provider not found, using default",
+			slog.WarnContext(ctx, "requested provider not found, using default",
 				"requested", name,
 				"default", r.defaultName,
 			)
@@ -110,4 +106,17 @@ func (r *ProviderRegistry) ChatStream(ctx context.Context, req ConversationReque
 		return nil, err
 	}
 	return provider.ChatStream(ctx, req)
+}
+
+// GenerateImage routes the image generation request to the appropriate provider.
+func (r *ProviderRegistry) GenerateImage(ctx context.Context, req ImageRequest) (*ImageResponse, error) {
+	provider, err := r.resolve(ctx, req.Provider)
+	if err != nil {
+		return nil, err
+	}
+	imgProvider, ok := provider.(ImageProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q does not support image generation", req.Provider)
+	}
+	return imgProvider.GenerateImage(ctx, req)
 }

@@ -2,3 +2,5 @@ cmd/
 .DS_Store
 bin/
 reference/
+.vscode/
+.env

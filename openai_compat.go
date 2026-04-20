@@ -29,11 +29,7 @@ type OpenAICompatProvider struct {
 	baseURL    string
 	retryTimes int
 	httpClient *http.Client
-	log        *slog.Logger
 }
-
-// SetLogger sets the logger for the OpenAI-compatible provider.
-func (p *OpenAICompatProvider) SetLogger(l *slog.Logger) { p.log = l }
 
 // NewOpenAICompat creates a new OpenAI-compatible provider.
 func NewOpenAICompat(apiKey, baseURL string, retryTimes int) (*OpenAICompatProvider, error) {
@@ -52,7 +48,7 @@ func NewOpenAICompat(apiKey, baseURL string, retryTimes int) (*OpenAICompatProvi
 		baseURL:    baseURL,
 		retryTimes: retryTimes,
 		httpClient: &http.Client{Timeout: 120 * time.Second},
-		log:        slog.New(discardHandler{}),
+
 	}, nil
 }
 
@@ -76,7 +72,7 @@ func (p *OpenAICompatProvider) Chat(ctx context.Context, req ConversationRequest
 		return nil, err
 	}
 
-	p.log.DebugContext(ctx, "openai compat api response",
+	slog.DebugContext(ctx, "openai compat api response",
 		"model", req.Model,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
@@ -247,7 +243,7 @@ func (p *OpenAICompatProvider) ChatStream(ctx context.Context, req ConversationR
 			raw := acc.args.String()
 			if raw != "" {
 				if err := json.Unmarshal([]byte(raw), &args); err != nil {
-					p.log.Warn("failed to parse streamed tool call arguments",
+					slog.Warn("failed to parse streamed tool call arguments",
 						"tool", acc.name, "error", err)
 					args["raw"] = raw
 				}
@@ -274,7 +270,7 @@ func (p *OpenAICompatProvider) ChatStream(ctx context.Context, req ConversationR
 
 // buildRequestBody constructs the OpenAI-compatible request body.
 func (p *OpenAICompatProvider) buildRequestBody(req ConversationRequest, stream bool) map[string]any {
-	p.log.DebugContext(context.Background(), "openai compat request params", "params", req.Params)
+	slog.DebugContext(context.Background(), "openai compat request params", "params", req.Params)
 	messages := p.buildMessages(req)
 
 	body := map[string]any{
@@ -550,7 +546,7 @@ func (p *OpenAICompatProvider) parseResponse(body []byte, model string) (*LLMRes
 		args := make(map[string]any)
 		if tc.Function.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				p.log.Warn("failed to parse tool call arguments",
+				slog.Warn("failed to parse tool call arguments",
 					"tool", tc.Function.Name,
 					"error", err,
 				)
@@ -584,14 +580,9 @@ func extractTokenUsage(u *oaiUsage) TokenUsage {
 		cacheCreationTokens = u.PromptTokensDetails.CacheCreationTokens + u.PromptTokensDetails.CacheCreationInputTokens
 	}
 
-	outputTokens := u.CompletionTokens - reasoningTokens
-	if outputTokens < 0 {
-		outputTokens = u.CompletionTokens
-	}
-
 	return TokenUsage{
 		InputTokens:      u.PromptTokens,
-		OutputTokens:     outputTokens,
+		OutputTokens:     u.CompletionTokens,
 		ThinkingTokens:   reasoningTokens,
 		CacheReadTokens:  cachedTokens,
 		CacheWriteTokens: cacheCreationTokens,

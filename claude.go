@@ -28,11 +28,7 @@ func init() {
 type ClaudeProvider struct {
 	client     *anthropic.Client
 	retryTimes int
-	log        *slog.Logger
 }
-
-// SetLogger sets the logger for the Claude provider.
-func (p *ClaudeProvider) SetLogger(l *slog.Logger) { p.log = l }
 
 // NewClaude creates a new Claude provider using the Anthropic API directly.
 func NewClaude(apiKey string, retryTimes int) (*ClaudeProvider, error) {
@@ -51,7 +47,7 @@ func NewClaude(apiKey string, retryTimes int) (*ClaudeProvider, error) {
 	return &ClaudeProvider{
 		client:     &client,
 		retryTimes: retryTimes,
-		log:        slog.New(discardHandler{}),
+
 	}, nil
 }
 
@@ -77,7 +73,7 @@ func NewClaudeVertex(project, location string, retryTimes int) (*ClaudeProvider,
 	return &ClaudeProvider{
 		client:     &client,
 		retryTimes: retryTimes,
-		log:        slog.New(discardHandler{}),
+
 	}, nil
 }
 
@@ -98,7 +94,7 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req ConversationRequest) (*LL
 
 	llmResp := p.parseMessage(resp, req.Model)
 
-	p.log.DebugContext(ctx, "claude api response",
+	slog.DebugContext(ctx, "claude api response",
 		"model", req.Model,
 		"input_tokens", llmResp.TokenUsage.InputTokens,
 		"output_tokens", llmResp.TokenUsage.OutputTokens,
@@ -192,7 +188,7 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 					args := make(map[string]any)
 					if state.input != "" {
 						if err := json.Unmarshal([]byte(state.input), &args); err != nil {
-							p.log.Warn("failed to parse streamed tool call input",
+							slog.Warn("failed to parse streamed tool call input",
 								"tool", state.name, "error", err)
 							args["raw"] = state.input
 						}
@@ -219,7 +215,7 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 				if event.Usage.CacheCreationInputTokens > 0 {
 					totalUsage.CacheWriteTokens = int(event.Usage.CacheCreationInputTokens)
 				}
-				p.log.DebugContext(ctx, "claude stream message_delta usage",
+				slog.DebugContext(ctx, "claude stream message_delta usage",
 					"output_tokens", event.Usage.OutputTokens,
 					"cache_read", event.Usage.CacheReadInputTokens,
 					"cache_write", event.Usage.CacheCreationInputTokens,
@@ -230,7 +226,7 @@ func (p *ClaudeProvider) ChatStream(ctx context.Context, req ConversationRequest
 				totalUsage.InputTokens = int(msg.Usage.InputTokens)
 				totalUsage.CacheReadTokens = int(msg.Usage.CacheReadInputTokens)
 				totalUsage.CacheWriteTokens = int(msg.Usage.CacheCreationInputTokens)
-				p.log.DebugContext(ctx, "claude stream message_start usage",
+				slog.DebugContext(ctx, "claude stream message_start usage",
 					"input_tokens", msg.Usage.InputTokens,
 					"cache_read", msg.Usage.CacheReadInputTokens,
 					"cache_write", msg.Usage.CacheCreationInputTokens,
@@ -445,7 +441,7 @@ func (p *ClaudeProvider) parseMessage(msg *anthropic.Message, model string) *LLM
 			args := make(map[string]any)
 			if len(block.Input) > 0 {
 				if err := json.Unmarshal(block.Input, &args); err != nil {
-					p.log.Warn("failed to parse tool call input",
+					slog.Warn("failed to parse tool call input",
 						"tool", block.Name, "error", err)
 					args["raw"] = string(block.Input)
 				}

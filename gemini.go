@@ -375,7 +375,27 @@ func (g *GeminiProvider) buildConfig(req ConversationRequest) *genai.GenerateCon
 		}
 	}
 
-	if len(req.Tools) > 0 {
+	if req.ParamBool("computer_use", false) {
+		cuTool := &genai.Tool{
+			ComputerUse: &genai.ComputerUse{
+				Environment: genai.EnvironmentBrowser,
+			},
+		}
+		if excluded := req.ParamString("computer_use_excluded", ""); excluded != "" {
+			cuTool.ComputerUse.ExcludedPredefinedFunctions = strings.Split(excluded, ",")
+		}
+		cfg.Tools = []*genai.Tool{cuTool}
+		if len(req.Tools) > 0 {
+			cfg.Tools = append(cfg.Tools, &genai.Tool{
+				FunctionDeclarations: convertToolDefs(req.Tools),
+			})
+		}
+		cfg.ToolConfig = &genai.ToolConfig{
+			FunctionCallingConfig: &genai.FunctionCallingConfig{
+				Mode: genai.FunctionCallingConfigModeAny,
+			},
+		}
+	} else if len(req.Tools) > 0 {
 		cfg.Tools = []*genai.Tool{{
 			FunctionDeclarations: convertToolDefs(req.Tools),
 		}}

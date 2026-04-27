@@ -168,6 +168,122 @@ func TestGeminiGenerateImage(t *testing.T) {
 		resp.TokenUsage.CacheReadTokens, resp.TokenUsage.CacheWriteTokens)
 }
 
+func TestGeminiComputerUse(t *testing.T) {
+	project := getEnv(t, "GCP_PROJECT")
+	provider, err := llm.NewGeminiVertex("", project, getEnv(t, "GCP_LOCATION", "us-east5"), 3)
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+
+	resp, err := provider.Chat(context.Background(), llm.ConversationRequest{
+		Model: "gemini-3-flash-preview",
+		Messages: []llm.Message{
+			{Role: "user", Content: "Go to google.com and search for 'weather in New York'"},
+		},
+		Params: map[string]any{
+			"computer_use":    true,
+			"thinking_level":  "low",
+			"temperature":     1.0,
+			"top_p":           0.95,
+		},
+	})
+	if err != nil {
+		t.Fatalf("chat error: %v", err)
+	}
+
+	t.Logf("Content: %s", resp.Content)
+	t.Logf("Thinking: %s", resp.Thinking)
+	t.Logf("ToolCalls count: %d", len(resp.ToolCalls))
+	t.Logf("FinishReason: %s", resp.FinishReason)
+	t.Logf("Tokens: input=%d output=%d thinking=%d",
+		resp.TokenUsage.InputTokens, resp.TokenUsage.OutputTokens, resp.TokenUsage.ThinkingTokens)
+
+	if len(resp.ToolCalls) == 0 && resp.Content == "" {
+		t.Error("expected tool calls or content in response")
+	}
+
+	for i, tc := range resp.ToolCalls {
+		t.Logf("ToolCall[%d]: name=%s id=%s args=%v", i, tc.Name, tc.ID, tc.Args)
+	}
+}
+
+func TestGeminiComputerUseWithExcluded(t *testing.T) {
+	project := getEnv(t, "GCP_PROJECT")
+	provider, err := llm.NewGeminiVertex("", project, getEnv(t, "GCP_LOCATION", "us-east5"), 3)
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+
+	resp, err := provider.Chat(context.Background(), llm.ConversationRequest{
+		Model: "gemini-3-flash-preview",
+		Messages: []llm.Message{
+			{Role: "user", Content: "Click on the search button at the center of the screen"},
+		},
+		Params: map[string]any{
+			"computer_use":          true,
+			"computer_use_excluded": "drag_and_drop,hover_at",
+			"thinking_level":        "low",
+		},
+	})
+	if err != nil {
+		t.Fatalf("chat error: %v", err)
+	}
+
+	t.Logf("Content: %s", resp.Content)
+	t.Logf("ToolCalls count: %d", len(resp.ToolCalls))
+	for i, tc := range resp.ToolCalls {
+		t.Logf("ToolCall[%d]: name=%s args=%v", i, tc.Name, tc.Args)
+		if tc.Name == "drag_and_drop" || tc.Name == "hover_at" {
+			t.Errorf("excluded function %s should not be called", tc.Name)
+		}
+	}
+}
+
+func TestGeminiComputerUseWithCustomTools(t *testing.T) {
+	project := getEnv(t, "GCP_PROJECT")
+	provider, err := llm.NewGeminiVertex("", project, getEnv(t, "GCP_LOCATION", "us-east5"), 3)
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+
+	resp, err := provider.Chat(context.Background(), llm.ConversationRequest{
+		Model: "gemini-3-flash-preview",
+		Messages: []llm.Message{
+			{Role: "user", Content: "Open the weather app on my phone"},
+		},
+		Tools: []llm.ToolDefinition{
+			{
+				Name:        "open_app",
+				Description: "Opens an app by name on the device",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"app_name": map[string]any{
+							"type":        "string",
+							"description": "Name of the app to open",
+						},
+					},
+					"required": []string{"app_name"},
+				},
+			},
+		},
+		Params: map[string]any{
+			"computer_use":          true,
+			"computer_use_excluded": "open_web_browser,search,navigate,hover_at,scroll_document,go_forward,key_combination,drag_and_drop",
+			"thinking_level":        "low",
+		},
+	})
+	if err != nil {
+		t.Fatalf("chat error: %v", err)
+	}
+
+	t.Logf("Content: %s", resp.Content)
+	t.Logf("ToolCalls count: %d", len(resp.ToolCalls))
+	for i, tc := range resp.ToolCalls {
+		t.Logf("ToolCall[%d]: name=%s args=%v", i, tc.Name, tc.Args)
+	}
+}
+
 func TestGeminiEditImage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping long-running image edit test")

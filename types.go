@@ -98,11 +98,12 @@ type ToolCall struct {
 
 // ToolResult contains the output of a tool execution.
 type ToolResult struct {
-	ToolCallID string  `json:"toolCallId"`
-	Name       string  `json:"name"`
-	Content    string  `json:"content"`
-	IsError    bool    `json:"isError,omitempty"`
-	Images     []Image `json:"images,omitempty"`
+	ToolCallID string         `json:"toolCallId"`
+	Name       string         `json:"name"`
+	Content    string         `json:"content"`
+	IsError    bool           `json:"isError,omitempty"`
+	Images     []Image        `json:"images,omitempty"`
+	Extra      map[string]any `json:"extra,omitempty"`
 }
 
 // LLMResponse represents the unified response from an LLM provider.

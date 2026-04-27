@@ -5,7 +5,7 @@ go 1.25.8
 require (
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/google/uuid v1.6.0
-	google.golang.org/genai v1.52.0
+	google.golang.org/genai v1.54.0
 )
 
 require (

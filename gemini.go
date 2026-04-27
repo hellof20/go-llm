@@ -234,16 +234,25 @@ func (g *GeminiProvider) buildContents(messages []Message) []*genai.Content {
 		if msg.Role == "tool" && len(msg.ToolResults) > 0 {
 			var parts []*genai.Part
 			for _, tr := range msg.ToolResults {
-				parts = append(parts, genai.NewPartFromFunctionResponse(tr.Name, map[string]any{
-					"result": tr.Content,
-				}))
+				respMap := map[string]any{"output": tr.Content}
+				for k, v := range tr.Extra {
+					respMap[k] = v
+				}
+
+				var frParts []*genai.FunctionResponsePart
 				for _, img := range tr.Images {
-					parts = append(parts, &genai.Part{
-						InlineData: &genai.Blob{
+					frParts = append(frParts, &genai.FunctionResponsePart{
+						InlineData: &genai.FunctionResponseBlob{
 							MIMEType: img.MimeType,
 							Data:     img.Data,
 						},
 					})
+				}
+
+				if len(frParts) > 0 {
+					parts = append(parts, genai.NewPartFromFunctionResponseWithParts(tr.Name, respMap, frParts))
+				} else {
+					parts = append(parts, genai.NewPartFromFunctionResponse(tr.Name, respMap))
 				}
 			}
 			contents = append(contents, &genai.Content{

@@ -181,10 +181,10 @@ func TestGeminiComputerUse(t *testing.T) {
 			{Role: "user", Content: "Go to google.com and search for 'weather in New York'"},
 		},
 		Params: map[string]any{
-			"computer_use":    true,
-			"thinking_level":  "low",
-			"temperature":     1.0,
-			"top_p":           0.95,
+			"computer_use":   true,
+			"thinking_level": "low",
+			"temperature":    1.0,
+			"top_p":          0.95,
 		},
 	})
 	if err != nil {
@@ -283,7 +283,6 @@ func TestGeminiComputerUseWithCustomTools(t *testing.T) {
 		t.Logf("ToolCall[%d]: name=%s args=%v", i, tc.Name, tc.Args)
 	}
 }
-
 func TestGeminiEditImage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping long-running image edit test")
